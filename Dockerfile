@@ -1,56 +1,55 @@
 # --------------------------------------------------------------------------------------
 # STAGE 1: Dependency Installation (Instalação de Dependências)
-# Instala o pnpm e TODAS as dependências (incluindo devDependencies) necessárias para o build.
+# Esta etapa garante que as dependências sejam instaladas de forma eficiente e segura.
 # --------------------------------------------------------------------------------------
 FROM node:20-alpine AS deps
 
-# Instalar pnpm (crucial para o seu projeto)
-RUN npm install -g pnpm
-
 # Definir o diretório de trabalho
 WORKDIR /app
 
-# Copiar os arquivos de manifesto. Usamos o pnpm-lock.yaml.
-COPY package.json pnpm-lock.yaml ./
+# Copiar os arquivos de manifesto (package.json e yarn.lock ou package-lock.json)
+COPY package.json yarn.lock* package-lock.json* ./
 
-# Instalar TODAS as dependências (sem --prod). Isso corrige o MODULE_NOT_FOUND.
-RUN pnpm install --frozen-lockfile
+# Instalar as dependências de produção (necessárias em runtime)
+RUN npm install --frozen-lockfile
 
 # --------------------------------------------------------------------------------------
 # STAGE 2: Builder (Construção da Aplicação)
-# Copia o código fonte e executa o comando de build do Next.js.
+# Esta etapa realiza a compilação do código Next.js para o ambiente de produção.
 # --------------------------------------------------------------------------------------
 FROM node:20-alpine AS builder
-
-# Instalar pnpm (se não estiver disponível, embora não seja estritamente necessário se a instalação for global)
-RUN npm install -g pnpm
 
 # Definir o diretório de trabalho
 WORKDIR /app
 
-# Copiar arquivos de manifesto e node_modules COMPLETOS (do Stage 1)
-COPY package.json pnpm-lock.yaml ./
+# Copiar arquivos de manifesto e dependências (do Stage 1)
+COPY package.json yarn.lock* package-lock.json* ./
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copiar todo o código fonte
 COPY . .
 
-# Comando de Build: Gera o output 'standalone' (essencial para o Docker).
-RUN pnpm run build
+# Comando de Build
+# O comando de build do Next.js compila o app e gera o output 'standalone'.
+RUN npm run build
 
 # --------------------------------------------------------------------------------------
-# STAGE 3: Runner (Imagem Final de Produção - Mínima e Segura)
-# Esta é a imagem final, minimalista, que será usada em produção.
+# STAGE 3: Runner (Imagem Final de Produção)
+# Esta é a imagem final, mínima e segura, que será usada em produção.
+# Ela contém apenas o necessário para executar o output 'standalone'.
 # --------------------------------------------------------------------------------------
 FROM node:20-alpine AS runner
+
+# Instalar 'dumb-init' para gerenciamento de processos (opcional, mas recomendado)
+# RUN apk add --no-cache dumb-init
 
 # Definir o diretório de trabalho
 WORKDIR /app
 
 # Variáveis de Ambiente
-# NODE_ENV precisa ser 'production' para otimizar o Next.js.
+# NODE_ENV precisa ser 'production' para otimizar o Next.js
 ENV NODE_ENV production
-# HOST e PORT para que o servidor escute corretamente no ambiente Docker.
+# HOST e PORT para que o servidor escute corretamente no ambiente Docker
 ENV HOST 0.0.0.0
 ENV PORT 3000
 
@@ -58,10 +57,13 @@ ENV PORT 3000
 RUN addgroup -g 1001 -S nodejs
 RUN adduser -S nextjs -u 1001
 
-# Copiar a pasta 'standalone' (que inclui os módulos necessários), 'public' e 'static' do Stage Builder
+# Copiar a pasta 'standalone' e 'public' do Stage Builder
+# O output standalone inclui todos os node_modules necessários para a execução
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# REMOVIDO: A linha abaixo era redundante, pois o .next/standalone já inclui os módulos.
+# COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules 
 
 # Definir o usuário que irá executar a aplicação
 USER nextjs
@@ -69,5 +71,9 @@ USER nextjs
 # Expor a porta que o app Next.js escutará
 EXPOSE 3000
 
-# Comando de Início (Executa o Next.js Standalone Server)
+# Comando de Início (Next.js Standalone Server)
+# O Next.js usa o server.js gerado no standalone output
 CMD ["node", "server.js"]
+
+# Caso tenha usado 'dumb-init' (descomente a linha RUN e use este CMD alternativo)
+# CMD ["dumb-init", "node", "server.js"]
